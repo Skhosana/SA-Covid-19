@@ -1,0 +1,938 @@
+---
+title: "SA Covid-19"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+runtime: shiny
+---
+```{r echo=FALSE}
+##Document packages
+if(!require(glue)) install.packages("glue",repos="http://cran.r-project.org")  
+if(!require(purrr)) install.packages("purrr",repos="http://cran.r-project.org")  
+if(!require(foreign)) install.packages("foreign",repos="http://cran.r-project.org")  
+if(!require(lattice)) install.packages("lattice",repos="http://cran.r-project.org") 
+#devtools::install_version("lwgeom","0.2-1")
+```
+
+```{r setup,echo=FALSE, message=FALSE, warning=FALSE}
+##Importing packages
+if(!require(spdplyr)) install.packages("spdplyr",repos="http://cran.r-project.org")
+###
+if(!require(flexdashboard)) install.packages("flexdashboard",repos="http://cran.r-project.org")###For producing dashboard components
+if(!require(tidyverse)) install.packages("tidyverse",repos="http://cran.r-project.org") ###For cleaning the data
+if(!require(timeDate)) install.packages("timeDate",repos="http://cran.r-project.org") ##For extracting months, years and days from date                         variables
+if(!require(ggplot2)) install.packages("ggplot2",repos="http://cran.r-project.org") ##For plotting graphs seemlessly
+if(!require(lubridate)) install.packages("lubridate",repos="http://cran.r-project.org") ##For setting date formats
+if(!require(plotly)) install.packages("plotly",repos="http://cran.r-project.org") ##For plotting interactive graphs
+if(!require(readxl)) install.packages("readxl",repos="http://cran.r-project.org") ##For reading excel/csv data formats
+if(!require(xtable)) install.packages("xtable",repos="http://cran.r-project.org") ##For rendering tables
+if(!require(tmap)) install.packages("tmap",repos="http://cran.r-project.org")
+if(!require(leaflet)) install.packages("leaflet",repos="http://cran.r-project.org")
+if(!require(geojsonio)) install.packages("geojsonio",repos="http://cran.r-project.org")
+if(!require(shinyWidgets)) install.packages("shinyWidgets",repos="http://cran.r-project.org")
+if(!require(shinythemes)) install.packages("shinythemes",repos="http://cran.r-project.org")
+if(!require(DT)) install.packages("DT",repos="http://cran.r-project.org")
+
+###Rolling function
+RollApply<-function(data,FUN,width,fill=NA){
+  if(is.data.frame(data) || is.matrix(data)){
+    T=nrow(data)} else{
+      T=length(data)}
+  wn=T-(width-1)
+  out<-NULL
+  for(i in (1:wn)){
+    idx=(i:(width+(i-1)))
+    out<-c(out,FUN(data[idx]))
+  }
+  return(c(out,rep(NA,width-1)))
+}
+
+##Group summary function##
+summariZe<-function(data,group.var,sum.var,stat){
+ if(!is.character(group.var) | !is.character(sum.var)){print("Object should be character")}
+ if(!is.data.frame(data)){print("Object should be data frame")}
+ var=names(data)
+ group=levels(as.factor(data[,which(var==group.var)]))
+ m=length(group) ###Number of groups
+ out<-list()
+ for(i in (1:m)){
+   out[[i]]=data[,which(var==sum.var)][data[,which(var==group.var)]==group[i]]
+ }
+ out1<-lapply(out,stat)
+ res=data.frame(factor(group,levels=group),as.numeric(unlist(out1)))
+ colnames(res)=c(group.var,"x")
+ return(res)
+}
+
+##New cases plotting function
+ncases_plots<-function(data,plot_date){
+  sub_data<-subset(data,data$date<=plot_date)
+  title=dating_func(sub_data)
+  sub_data%>%
+    na.omit()%>%
+    ggplot(aes(x=date,color=Province))+
+    geom_line(aes(y=new_cases))+
+    ylab("New cases")+xlab("date")+
+    labs(subtitle=paste("Covid-19 daily new cases",",",title))
+}
+
+##Cumulative cases plotting function
+cumcases_plots<-function(data,plot_date){
+  sub_data<-subset(data,data$date<=plot_date)
+  title=dating_func(sub_data)
+  sub_data%>%
+    na.omit()%>%
+    ggplot(aes(x=date,color=Province))+
+    geom_line(aes(y=cases))+
+    ylab("Cumulative cases")+xlab("date")+
+    labs(subtitle=paste("Covid-19 cumulative cases",",",title))
+}
+
+##Deaths plottig function
+deaths_plots<-function(data,plot_date){
+  sub_data<-subset(data,data$date<=plot_date)
+  title=dating_func(sub_data)
+  sub_data%>%
+    na.omit()%>%
+    ggplot(aes(x=date,color=Province))+
+    geom_line(aes(y=cumulative_deaths),linetype="solid")+
+    ylab("Deaths")+xlab("date")+
+    labs(subtitle=paste("Covid-19 cumulative deaths",",",title))
+}
+
+##Recoveries plotting function
+rec_plots<-function(data,plot_date){
+  sub_data<-subset(data,data$date<=plot_date)
+  title=dating_func(sub_data)
+  sub_data%>%
+    na.omit()%>%
+    ggplot(aes(x=date,color=Province))+
+    geom_line(aes(y=cumulative_recoveries),linetype="solid")+
+    ylab("Recoveries")+xlab("date")+
+    labs(subtitle=paste("Covid-19 cumulative recoveries",",",title))
+}
+
+##Dated plot title
+dating_func<-function(data){
+  n_days=as.character(nrow(data)%%7)
+  n_weeks=as.character(as.integer(nrow(data)/7))
+  start_date=format(data$date[1],"%d %b %Y")
+  current_date=format(data$date[nrow(data)],"%d %b %Y")
+  paste(start_date,"-",current_date,"(",n_weeks,"week(s)","and",n_days,"day(s))")
+}
+
+##Case mapping
+case_map<-function(plotdate,type,show,map){
+  plotdate1=as.Date(plotdate)
+  if(map=="South Africa"){
+    map_data=map_data1
+    map_data$id<-provinces2
+    sub1<-subset(prov_cases,date==plotdate)
+    sub1<-sub1[which(sub1$Province!="Un"),]
+    sub2<-if(sum(as.numeric(prov_death$date==plotdate))>0){ 
+      prov_death$cumulative_deaths[which(prov_death$date==plotdate)]}
+    else{rep(0,9)}
+  sub3<-if(sum(as.numeric(prov_rec$date==plotdate))>0){
+      prov_rec$cumulative_recoveries[which(prov_rec$date==plotdate1)]}
+  else{rep(0,9)}
+  }else{
+    map_data=map_data2%>%
+      filter(PROVNAME==map)
+    dd<-district_data%>%filter(Province==as.character(map),Date==plotdate1)
+    map_data$id<-map_data$DISTRICT
+    sub1<-dd
+    sub2<-dd$deaths
+    sub3<-dd$recoveries
+  }
+  map_data$Cases<-sub1$cases
+  map_data$Deaths<-sub2
+  map_data$Recoveries<-sub3
+  map_data$Active<-map_data$Cases-map_data$Deaths-map_data$Recoveries
+  if(!(type=="Actual")){
+    map_data$Cases<-round(map_data$Cases/sum(map_data$Cases)*100,1)
+    map_data$Deaths<-round(map_data$Deaths/sum(map_data$Deaths)*100,1)
+    map_data$Recoveries<-round(map_data$Recoveries/sum(map_data$Recoveries)*100,1)
+    map_data$Active<-round(map_data$Active/sum(map_data$Active)*100,1)
+    }
+
+  label=NULL
+  for(i in (1:length(map_data$id))){
+  label<-rbind(label,c(paste("Confirmed cases:",map_data$Cases[i]),paste("Deaths:",map_data$Deaths[i]),paste("Recoveries:",map_data$Recoveries[i]),paste("Active cases:",map_data$Active[i])))
+  }
+  label=as.data.frame(label)
+  map_data$label1<-label$V1;map_data$label2<-label$V2;map_data$label3<-label$V3;map_data$label4<-label$V4;
+  step<-tm_text("id",shadow=TRUE,ymod=1.5,xmod=-1.5,col="darkgreen",size=1.2,fontface = "bold")
+  
+  id<-cbind(map_data$Cases,map_data$Deaths,map_data$Recoveries,map_data$Active) ##Flag NA 
+  ##Show statistics on the map
+  dd=c(0,-3,-1.2,-1.1)
+
+  if(show=="Yes"){
+  for(i in (1:ncol(label))){
+    if(!is.na(id[1,i])){l=paste0("label",i);
+      step<-step+tm_shape(map_data)+tm_text(l,xmod=dd[i],ymod=-(i+i*0.5),col="blue",size=1,remove.overlap=TRUE)}
+  }
+  }
+  lonlat=as.numeric(apply(map_data@bbox,1,median))
+  m<-tm_shape(map_data)+
+    tm_fill(col="Deaths",breaks=c(seq(0,100,20),Inf),popup.vars = c("Cases","Deaths"),legend.show=sum(map_data$Deaths,na.rm=TRUE)>0,legend.hist=TRUE)+
+    tm_borders()+
+    tm_bubbles(size="Cases",popup.vars = c("Cases","Deaths"), col="red", alpha=0.8, scale=4)+step+
+    tm_layout(frame=T)+
+  
+    tmap_style("beaver")
+    tmap_options(bg.color="lightblue")
+    if(map=="South Africa"|map=="Northern Cape"){
+      tmap_leaflet(m)%>%setView(lonlat[1],lonlat[2],zoom=6)}
+    else if(map=="Gauteng")
+    {tmap_leaflet(m)%>%setView(lonlat[1],lonlat[2],zoom=8)}
+    else{tmap_leaflet(m)%>%setView(lonlat[1],lonlat[2],zoom=7)}
+}
+```
+
+```{r}
+##Reading in and editing the data
+df<-as.data.frame(read_excel("data/Data.xls",sheet="Daily cases"))
+df_deaths<-read_excel("data/Data.xls",sheet="Deaths")
+df_prov<-read_excel("data/Data.xls",sheet="Provincial")
+df_age<-read_excel("data/Data.xls",sheet="Age")
+df_gender<-read_excel("data/Data.xls",sheet="Gender")
+###=======Province data==============###
+provinces2<-c("Eastern Cape","Free State","Gauteng","KwaZulu-Natal","Limpopo","Mpumalanga","North West","Northern Cape","Western Cape")
+    ###Confirmed cases###
+prov_cases<-read_excel("data/Data.xls",sheet="provincial_cases")
+prov_cases$date<-as.Date(prov_cases$date)
+prov_cases<-prov_cases%>%
+  gather(Province,cases,-date)%>%
+  group_by(Province)%>%
+  mutate(new_cases=cases-lag(cases),week=as.factor(week(date)-9),
+         t=(1:nrow(prov_cases)))
+start_date_cases=format(df$Date[1],"%d %b %Y") ###start date
+current_date_cases=format(df$Date[nrow(df)],"%d %b %Y") ##Current date
+n_weeks_cases=as.character(as.integer(nrow(df)/7))
+n_days_cases=as.character(nrow(df)%%7)
+
+  ###Confirmed deaths###
+prov_death1<-read_excel("data/Data.xls",sheet="provincial_death")
+prov_death<-prov_death1%>%
+  gather(Province,cumulative_deaths,-date)%>%
+  group_by(Province)%>%
+  mutate(new_deaths=cumulative_deaths-lag(cumulative_deaths))
+start_date_deaths=format(prov_death$date[1],"%d %b %Y") ###start date
+current_date_deaths=format(prov_death$date[nrow(prov_death)],"%d %b %Y")
+n_weeks_death=as.character(as.integer(nrow(prov_death1)/7))
+n_days_death=as.character(nrow(prov_death1)%%7)
+
+  ###Confirmed recoveries##
+prov_rec1<-read_excel("data/Data.xls",sheet="provincial_recovery")
+prov_rec<-prov_rec1%>%
+  gather(Province,cumulative_recoveries,-date)%>%
+  group_by(Province)%>%
+  mutate(new_recoveries=cumulative_recoveries-lag(cumulative_recoveries))
+start_date_rec=format(prov_rec$date[1],"%d %b %Y") ###start date
+current_date_rec=format(prov_rec$date[nrow(prov_rec)],"%d %b %Y")##Current date
+n_weeks_rec=as.character(as.integer(nrow(prov_rec1)/7))
+n_days_rec=as.character(nrow(prov_rec1)%%7)
+provinces=unique(prov_cases$Province)
+###
+
+###Provincial mapping data
+map_data1=geojson_read("data/za-provinces.geojson",what="sp")
+map_data2=geojson_read("data/za-districts2.geojson",what="sp")
+map_data1$PROVINCE=provinces[1:9]
+df$Date=as.timeDate(df$Date)
+df$Day=dayOfWeek(df$Date)
+df$Week=as.factor(week(df$Date)-9)
+wk=c("Wed","Thu","Fri","Sat","Sun","Mon","Tue")
+df$Day<-factor(as.factor(df$Day),levels=wk)
+###District case data
+district_data<-NULL
+for(i in (1:9)){
+lab=map_data2%>%filter(PROVNAME==provinces2[i])%>%select(DISTRICT)
+labs=c("Date",lab$DISTRICT)
+d_cases<-read_excel("data/Provincial_Cases.xlsx",sheet=provinces[1:9][i])[,labs]
+d_death<-read_excel("data/Provincial_Deaths.xlsx",sheet=provinces[1:9][i])[,labs]%>%
+  gather(District,deaths,-Date)
+d_rec<-read_excel("data/Provincial_Recoveries.xlsx",sheet=provinces[1:9][i])[,labs]%>%
+  gather(District,recoveries,-Date)
+d<-d_cases%>%
+gather(District,cases,-Date)%>%
+  mutate(deaths=d_death$deaths,recoveries=d_rec$recoveries,Province=provinces2[i])
+district_data<-rbind(district_data,d)
+}
+```
+
+Daily statistics {data-icon="fa-bar-chart"}
+====================================================================
+
+```{r}
+css<-"
+#plotn1 {
+}
+#plotn2 {
+}
+#title  {
+  color: blue;
+  font-family: helvetica;
+  background-image: SA_flag.jpg;
+}
+"
+#ui
+ui<-fluidPage(title="front",
+              setBackgroundImage(src="SA_flag.jpg"),
+  tags$style(css),
+  titlePanel(htmlOutput("title")),
+  tags$br(),
+  splitLayout(cellWidths="650px",
+              cellArgs = list(style="padding:2px; border: 2px solid black;"),
+plotOutput("plotn1"),
+plotOutput("plotn2")
+)
+)
+
+#server
+server<-function(input,output){
+output$plotn1<-renderPlot({
+strt11=as.Date("2020-03-27");end11=as.Date("2020-04-16");
+se1=as.Date(sum(range(strt11:end11))/2,origin="1970-01-01")
+strt12=as.Date("2020-04-16");end12=as.Date("2020-04-30");
+se2=as.Date(sum(range(strt12:end12))/2,origin="1970-01-01")
+ext=as.Date("2020-04-09")##Lockdown extended
+ext3=as.Date("2020-05-01")##Beginning of level-4 lockdown 
+g<-ggplot(df,aes(x=as.Date(Date)))+
+  geom_rect(aes(xmin=strt11,xmax=end11,ymin=-Inf,ymax=Inf),fill="lightgreen",alpha=0.5)+
+  geom_rect(aes(xmin=strt12,xmax=end12,ymin=-Inf,ymax=Inf),fill="lightblue",alpha=0.5)+
+  annotate(geom="text",x=se1,y=150,label="21-day lockdown",fontface="bold",angle=60,size=6,color="green",alpha=0.3)+
+  annotate(geom="text",x=se2,y=150,label="14-day lockdown",fontface="bold",angle=60,size=6,color="blue",alpha=0.3)+
+  geom_smooth(span=0.2,aes(y=New_cases,color="New cases"),se=FALSE)+
+  geom_smooth(aes(y=New_Tests/30,color="New tests"),se=FALSE,span=0.15)+
+  scale_y_continuous(sec.axis = sec_axis(~.*30,name="New tests"))+
+  geom_vline(xintercept=ext,linetype="solid",color="red")+
+  annotate(geom = "text",x=ext,y=100,label="Lockdown extension",fontface="bold",angle=90,vjust=1,alpha=0.9,color="red",size=3)+
+  geom_vline(xintercept = ext3,linetype="solid",color="purple")+
+  annotate(geom="text",x=ext3,y=80,vjust=1,color="purple",fontface="bold",angle=90,alpha=0.9,size=3,label="Level-4 lockdown")+
+  scale_color_manual(name="",values =c("black","blue"))+
+  theme(legend.position ="bottom",
+        axis.title.y.right=element_text(colour="blue"),
+        axis.title.y=element_text(colour="black"),
+        axis.text.y.right = element_text(colour="blue"),
+        axis.text.y=element_text(colour="black")
+        )+xlab("Date")+ylab("New cases")
+g
+})
+
+output$plotn2<-renderPlot({
+df2=summariZe(df,"Week","New_cases",mean)
+m=unique(month(df$Date))
+g<-ggplot(df,aes(x=Week,y=New_cases))
+for(i in (1:length(m))){
+  r=c((4*i-3),(4*i+1))
+  g=g+geom_vline(xintercept = r[2],color="black",size=3)+
+    annotate(geom="text",x=mean(as.numeric(r)),y=500,label=month.name[m[i]],size=12,alpha=0.3)
+}
+sub=data.frame(week=as.numeric(unique(df$Week)),mean=df2$x)
+g+geom_boxplot(fill="lightblue")+
+  geom_text(data = df2,aes(x=Week,y=x,label=round(x)),vjust=-1.1,color="red")+
+  geom_point(data=df2,aes(x=Week,y=x,color="Actual mean"),shape=10,size=3)+
+  geom_smooth(data=sub,aes(x=week,y=mean,linetype="Weekly mean curve"),se=FALSE,span=0.45,color="blue")+
+  geom_hline(aes(yintercept = 90,linetype="Threshold (90 or above)"),color="red")+scale_linetype("")+
+  guides(linetype=guide_legend(override.aes = list(color=c("red","blue"))))+
+  scale_color_manual("",values=c("black"))+
+  theme(legend.position = "bottom")+
+  ylab("New cases")+scale_x_discrete(limits=(1:11))
+})
+
+output$title<-renderText({
+  paste("SA Covid-19,",start_date_cases,"-",current_date_cases,"(",n_weeks_cases,"week(s) and",n_days_cases,"day(s))")
+})
+}
+shinyApp(ui,server)
+```
+
+Vital statistics {data-icon="fa-signal"}
+=================================================================
+
+Row {data-height=100}
+-----------------------------------------------------------------
+
+### 7-day moving average of daily new cases
+
+```{r}
+dat=as.Date(df$Date)
+meanD<-df%>%
+  select(-Date)%>%
+  mutate(date=dat)%>%
+  filter(date>=max(date)-6)%>%
+  mutate(meanD=round(mean(New_cases)))%>%
+  select(meanD)
+gauge(meanD$meanD[1],min=0,max=90,sectors = gaugeSectors(success = c(0,44),warning = c(45,89),danger=c(90,100)))
+```
+
+>This is the average daily new cases for the last seven days (the current day included). Should the average daily new cases go above 90, then the nationwide lockdown will have to continue. On the other hand, should the average daily new cases be below 45 then the nationwide lockdown can be eased.These guidelines were provided by the South African health ministry following the presentation by the South African epidemiologist Prof. Salim Abdool Karim.
+
+### Percentage of the population tested
+
+```{r}
+pop.size=58775022
+perc.test=round((sum(df$New_Tests)/pop.size)*100,2)
+gauge(perc.test,min=0,max=100,symbol="%",sectors = gaugeSectors(success = c(80,100),warning = c(50,70),danger=c(0,40)))
+```
+
+>This is the percentage of the South African population that has already been tested for the 2019-nCov virus. The size of South African population, as at the 2019 mid-year population estimate, is about 58,78 million (Source: Statistics South Africa)
+
+### Percentage change in new tests
+
+```{r}
+ch=round((df$New_Tests[nrow(df)]-df$New_Tests[nrow(df)-1])/df$New_Tests[nrow(df)-1],2)
+gauge(ch,min=-100,max=100,symbol="%",sectors = gaugeSectors(danger = c(-100,0),success=c(1,100)))
+```
+
+>This is the change in the number of new tests done to date relative to the number of new tests done the previous date. This serves to gauge how fast the testing capacity is improving.
+
+### Mortality rate
+
+```{r}
+n.infected=sum(df_prov$Cases,na.rm = TRUE)
+n.deaths=df_prov$Deaths[nrow(df_prov)]
+perc.death=round((n.deaths/n.infected)*100,2)
+gauge(perc.death,min=0,max=100,symbol="%",sectors=gaugeSectors(success=c(0,30),warning = c(40,60),danger=c(70,100)))
+```
+
+>This is the percentage of the positive reported cases of the novel virus (2019-nCov) who are reported to have passed away from Covid-19. That is, the reported deaths (to date) divided by the reported cases (to date)  (Data source: sacoronavirus.co.za and nicd.ac.za)  
+
+### Recovery rate
+
+```{r}
+n.recovrd=df$Recoveries[nrow(df)]
+perc.rec=round((n.recovrd/n.infected)*100)
+gauge(perc.rec,min=0,max=100,symbol="%",sectors = gaugeSectors(success = c(80,100),warning = c(50,70),danger=c(0,40)))
+```
+
+>This is the percentage of the positive reported cases of the virus who have been reported to have recovered. That is, the reported recoveries (to date) divided by the reported cases (to date) (Data source: sacoronavirus.co.za and nicd.ac.za) 
+
+Row {data-height=100}
+-----------------------------------------------------------------
+
+### Active cases
+
+```{r}
+active=sum(df$New_cases)-df$Recoveries[nrow(df)]-df$Death[nrow(df)]
+valueBox(active,icon="fa-cogs",color="info")
+```
+
+### Number of tests done (to date)
+
+```{r}
+cn=paste("Number of tests done (as at",format(df$Date[nrow(df)],"%d %b %Y"),")")
+valueBox(sum(df$New_Tests),caption=cn,icon="fa-flask",color="info")
+```
+
+### Gender
+
+```{r}
+Gender=round(df_gender[,2]/sum(df_gender[,2])*100,1)
+caption=paste("of the deaths are",paste0(df_gender[which.max(Gender$Deaths),1],"s"),"(as at ",format(as.Date("2020-05-30"),"%d %b %Y"),")")
+valueBox(paste0(Gender$Deaths[which.max(Gender$Deaths)],"%"),icon=ifelse(Gender$Deaths[1]>Gender$Deaths[2],"fa-male","fa-female"),color="danger",caption=caption)
+```
+
+### Mean age of deaths
+
+```{r}
+age.d=round(sum(df_age$Age*df_age$Deaths)/sum(df_age$Deaths))
+valueBox(age.d,icon="fa-random",color="info",caption=paste("Mean age of deaths (as at",format(as.Date("2020-05-30"),"%d %b %Y"),")"))
+```
+
+### Most underlying condition (of the deaths)
+
+```{r}
+cond=data.frame(con=df_deaths$`Underlying Condition`)
+con=cond%>%na.omit()%>%filter(con!="None")
+disease=data.frame(table(con))
+valueBox(disease$con[which.max(disease$Freq)],icon="fa-user-plus",color="warning")
+```
+
+Row
+------------------------------------------------------------------------
+
+### is the province with the most reported cases
+
+```{r}
+id=which.max(df_prov$Cases)
+f.cases=provinces2[which(provinces==df_prov$Province[id])]
+perc_cases=round((df_prov$Cases[id]/sum(df_prov$Cases,na.rm = TRUE))*100,1)
+valueBox(paste(f.cases,paste0("(",perc_cases,"%",")")),icon="fa-users",color="info")
+```
+
+### is the province with the highest mortality rate
+
+```{r}
+mort=round((df_prov$Deaths/df_prov$Cases)*100,1)
+id=provinces2[which(provinces==df_prov$Province[which.max(mort)])]
+valueBox(paste(id,paste0("(",mort[which.max(mort)],"%",")")),icon="fa-hotel",color="info")
+```
+
+### is the province with the highest recovery rate
+
+```{r}
+rec=round((df_prov$Recoveries/df_prov$Cases)*100,1)
+id=provinces2[which(provinces==df_prov$Province[which.max(rec)])]
+valueBox(paste(id,paste0("(",rec[which.max(rec)],"%",")")),icon="fa-heartbeat",color="info")
+```
+
+Provincial {data-icon="fa-sitemap"}
+=====================================================================
+
+Input {.sidebar data-width="300"}
+---------------------------------------------------------------------
+```{r}
+##Sidebar style
+css<-"
+  #table1  {
+    font-size: 11px;
+    margin-left: -2em;
+  }
+  #html1  {
+    font-size: 11px;
+    margin-left: -1.5em;
+    margin-bottom: 0.5em;
+  }
+  #html2  {
+    font-size: 11px;
+    margin-left: 0.1em;
+    margin-bottom: -2em;
+  }
+  #gauge1 {
+    margin-left: -2em;
+    margin-bottom: -2em;
+  }
+  #provs  {
+    font-size: 11px;
+    margin-left: -2em;
+  }
+  #plotdate {
+    font-size: 11px;
+    margin-left: -1em;
+  }
+"
+```
+```{r}
+fluidPage(
+tags$style(css),
+span(tags$i("Compare different provinces"),style="color:red; margin-top: 2em; font-size:10px;"),
+checkboxGroupInput("provs","Choose province(s):",choices=provinces[-length(provinces)],selected = "EC",inline=TRUE),
+div(style="font-size: 11px; margin-left: -1em;",
+      sliderInput("plotdate","Plotting date:",
+            min=min(prov_cases$date),
+            max=max(prov_cases$date),
+            value=max(prov_cases$date),
+            timeFormat="%d %b", width="120%",
+            animate = animationOptions(interval=3000, loop=FALSE))),
+hr(),
+span(tags$i("View province specific Covid-19 statistics"),style="color:red; font-size:10px;"),
+div(class="outer",style="font-size: 11px; margin-left: -2em;",
+    fluidRow(column(12,selectInput("province","Province:",choices=provinces[-length(provinces)])))),
+htmlOutput("html1"),
+tableOutput("table1"),
+hr(),
+div(style="margin-top:0.5em; margin-bottom:0em;",fluidRow(column(6,gaugeOutput("gauge1",width="150%"))
+,column(6,htmlOutput("html2")))),
+hr(),
+plotOutput("plot1",height="150px",width="100%"),
+hr(),
+div(style="font-size:10px;",tags$p("The data used are from the daily updates by the Health ministry which are published here:",tags$br(),tags$a(href="https://www.sacoronavirus.co.za","SA Coronavirus"),tags$br(),"or",tags$br(),"the South African NICD published here:",tags$br(),tags$a(href="https://www.nicd.ac.za","NICD")))
+)
+```
+
+Row
+----------------------------------------------------------------------
+
+### New cases
+
+```{r}
+renderPlot({
+  provs<-input$provs
+  shiny::validate(need(!is.na(provs),"Error: Please select at least one province."))
+  prov_cases%>%
+    filter(Province==provs)%>%
+    ncases_plots(plot_date=input$plotdate)
+})
+```
+
+### Cumulative cases
+
+```{r}
+renderPlot({
+    provs<-input$provs
+    shiny::validate(need(!is.na(provs),"Error: Please select at least one province."))
+    prov_cases%>%
+    filter(Province==provs)%>%
+      cumcases_plots(plot_date=input$plotdate)
+})
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Deaths
+
+```{r}
+renderPlot({
+    plot_date<-input$plotdate
+    provs<-input$provs
+    shiny::validate(need(!is.na(provs),"Error: Please select at least one province."))
+    shiny::validate(need(sum(as.numeric(prov_death$date==plot_date))>0,paste("No death had been reported by",format(plot_date,"%d %b %Y"))))
+    prov_death%>%
+    filter(Province==provs)%>%
+      deaths_plots(plot_date = plot_date)
+})
+```
+
+### Recoveries
+
+```{r}
+renderPlot({
+    plot_date<-input$plotdate
+    provs<-input$provs
+    shiny::validate(need(!is.na(provs),"Error: Please select at least one province."))
+    shiny::validate(need(sum(as.numeric(prov_rec$date==plot_date))>0,paste("No recoveries had been reported by",format(plot_date,"%d %b %Y"))))
+    prov_rec%>%
+    filter(Province==provs)%>%
+      rec_plots(plot_date=plot_date)
+})
+
+###Province specific stats###
+output$table1<-renderTable({
+  prov<-input$province
+  n_cases=(prov_cases$new_cases[which(prov_cases$Province==prov)])[length(which(prov_cases$Province==prov))] ##Newcases
+  c_cases=prov_cases$cases[which(prov_cases$Province==prov)][length(which(prov_cases$Province==prov))] ##Cumulative cases
+  n_deaths=(prov_death$new_deaths[which(prov_death$Province==prov)])[length(which(prov_death$Province==prov))] ##newdeaths
+   c_deaths=prov_death$cumulative_deaths[which(prov_death$Province==prov)][length(which(prov_death$Province==prov))] ##Cumulative cases
+   n_rec=(prov_rec$new_recoveries[which(prov_rec$Province==prov)])[length(which(prov_rec$Province==prov))] ##newrecoveries
+   c_rec=prov_rec$cumulative_recoveries[which(prov_rec$Province==prov)][length(which(prov_rec$Province==prov))] ##cumulativerecoveries
+
+out<-data.frame(c("Cases","Deaths","Recoveries"),c(n_cases,n_deaths,n_rec),c(c_cases,c_deaths,c_rec))
+names(out)=c(paste("As at",current_date_cases),"New","Total")
+xtable(out)
+},align="l",bordered=TRUE,digits=0)
+
+###Average daily new cases
+reactive_out1<-reactive({
+prov=input$province
+shiny::validate(need(!is.na(prov),"Error: Please select at least one province."))
+id1=which(prov_cases$Province==prov)
+id2=which(prov_death$Province==prov)
+w.k=as.numeric(prov_cases$week[id1])
+avg<-prov_cases%>%
+  filter(date>=max(date)-6 & Province==prov)%>%
+  group_by(Province)%>%
+  summarise(avg=mean(new_cases))%>%
+  select(avg)
+list(province=prov,prov.name=provinces2[which(provinces==prov)],id_cases=id1,id_deaths=id2,avg=round(avg$avg))
+})
+
+output$gauge1<-renderGauge({
+gauge(reactive_out1()$avg,min=0,max=90,sectors = gaugeSectors(success = c(0,44),warning = c(45,89),danger=c(90,100)))
+})
+
+output$html2<-renderText({
+  id2=reactive_out1()$idx
+  Avg=reactive_out1()$avg
+  if(Avg<=45){
+    outf<-paste("<font color=green><b>")
+    out<-paste("This is at most",paste0("<font color=green><b>",45,"</b></font>",","),"the province is on track for moving to a lower lockdown level.")
+  }
+  else{
+  if(Avg>45 & Avg<90){
+     outf<-paste("<font color=blue><b>")
+     out<-paste("This is above","<font color=green><b>",45,"</b></font>","but below",paste0("<font color=red><b>",90,"</b></font>",","),"the current lockdown level should be maintained.")
+  }
+  else{
+   if(Avg>=90){
+     outf<-paste("<font color=red><b>")
+     out<-paste("This is at least",paste0("<font color=red><b>",90,"</b></font>",","),"a hard lockdown should be reinstated to reduce the spread.")
+   }
+  }
+}
+  start_wk<-max(prov_cases$date)-6
+  paste("The 7-day moving average of daily new cases starting from","<u><b>",format(start_wk,"%d %b %Y"),"</b></u>","is",paste0(outf,Avg,".","</b></font>\n"),out)
+})
+
+###Province statistics
+output$html1<-renderText({
+  prov1<-provinces2[which(provinces==reactive_out1()$province)]
+ paste("The table below gives the","<font color=red, background-color=black><b>","Covid-19","</b></font>","statistics for the","<font color=blue><i>",prov1,"</i></font>","province.\n")
+})
+
+###Mortality curve
+output$plot1<-renderPlot({
+  prov=reactive_out1()$Province
+  prov2=reactive_out1()$prov.name
+  prov_cases<-prov_cases[reactive_out1()$id_cases,]
+  sub_data<-subset(prov_cases,date>=min(prov_death$date))%>%select(-new_cases)%>%filter(Province!="UNALLOCATED")
+  
+  prov_death<-prov_death[reactive_out1()$id_deaths,]%>%select(-new_deaths)
+  
+  data.frame(prov_death,sub_data)%>%
+    mutate(mortality_rate=(cumulative_deaths/cases)*100)%>%
+    select(date,mortality_rate)%>%
+    ggplot(aes(x=date))+
+    geom_smooth(aes(y=mortality_rate),se=FALSE)+
+    xlab("date")+ylab("Mortality rate(%)")+
+    labs(title=paste(prov2,"Covid-19 mortality curve"),subtitle=paste(start_date_deaths,"-",current_date_deaths,"(",n_weeks_death,"week(s)","and",n_days_death,"day(s))"))+
+    theme(plot.margin = margin(5,5,5,5),plot.title = element_text(size=10),plot.subtitle = element_text(size=7),axis.title.x=element_text(size=10),
+          axis.title.y=element_text(size=10))
+})
+```
+
+
+National Covid-19 tracker {data-icon="fa-dashboard"}
+=========================================================================
+
+```{r}
+css_map<-"
+.controls {
+  border: 1px solid black;
+}
+"
+ui1<-fillPage(
+        tags$style(css_map),
+            leafletOutput("map",height=615),
+             absolutePanel(top=50,bottom=50,left=50,
+                  draggable=TRUE,
+                  span(h5(textOutput("date1"),align="right"),style="color:blue;"),
+                  div(h3(textOutput("text1"),align="right"),style="color:orange;"),
+                  div(h4(textOutput("text2"),align="right"),style="color:red;"),
+                  div(h4(textOutput("text3"),align="right"),style="color:blue;"),
+                  div(h4(textOutput("text4"),align="right"),style="color:green;"),
+                  br(),
+                  span(tags$i(h5(textOutput("date"), align="right")),
+                       style="color:blue;"),
+                  hr(),
+                  sliderInput("plot_date1",label="Date of Occurrence:",
+                              min=min(prov_cases$date),
+                              max=max(prov_cases$date),
+                              value = max(prov_cases$date),
+                              timeFormat="%d %b",
+                              animate=animationOptions(interval=3000,loop=FALSE)),
+                  radioButtons("show","Show stats on map:",choices=c("Yes","No"),
+                               selected="No"),
+                  conditionalPanel("input.show=='Yes'",
+                                   radioButtons("type","Data type:",
+                                              choices=c("Actual","Relative(%)")))),
+        absolutePanel(left=1150,bottom=20,draggable=TRUE,
+                      radioButtons("provs_map","Choose map to display:",
+                                   choices=c("South Africa",provinces2)))
+)
+
+server1<-function(input,output){
+  reactive_txt<-reactive({
+    output$date1<-renderText({
+      paste("As from",format(input$plot_date1,"%d %b %Y"),"South Africa reported:")
+    })
+    date=as.Date(df$Date)
+    plotdate=input$plot_date1
+    sub1<-prov_cases%>%filter(date==plotdate)%>%
+      mutate(s=sum(cases))
+    sub2<-df%>%select(-Date)%>%mutate(date=date)%>%filter(date==plotdate)%>%
+      select(Deaths)
+    sub3<-df%>%select(-Date)%>%mutate(date=date)%>%filter(date==plotdate)%>%
+      select(Recoveries) 
+    act=sum(sub1$s)-sub2$Death-sub3$Recoveries
+    list(cases=sum(sub1$s),deaths=sum(sub2$Deaths),rec=sum(sub3$Recoveries),act=act)
+  })
+  output$date<-renderText({
+    paste("Last updated on",format(max(prov_cases$date),"%d %b %Y"),".")
+  })
+  output$text1<-renderText({
+  paste(reactive_txt()$cases,"cases")
+  })
+  
+  output$text2<-renderText({
+  paste(reactive_txt()$deaths,"deaths")
+  })
+  
+  output$text3<-renderText({
+  paste(print(reactive_txt()$rec),"recoveries")
+  })
+  
+  output$text4<-renderText({
+    paste(print(reactive_txt()$act),"active cases")
+  })
+  
+  output$map<-renderLeaflet({
+    plot_date<-input$plot_date1
+    case_map(plot_date,input$type,input$show,map=input$provs_map)
+  })
+}
+
+shinyApp(ui1,server1)
+```
+
+Data {data-icon="fa-database"}
+============================================================================
+```{r}
+##Sources data
+sources=read.csv("data/Covid-19-sources.txt")
+
+###Replace NaN
+replace_nan<-function(x){
+  y<-NULL;
+  for(i in (1:length(x))){
+    if(is.nan(x[i])){
+      y<-c(y,0)
+      }else{
+    y<-c(y,x[i]) 
+    }
+  }
+return(as.numeric(y))
+}
+
+##Data view
+Dataviewer<-function(National,Provinces,type="Actual"){
+  ##National
+  ##  actual figures
+outdata<-df%>%select(-Date)%>%mutate(Date=as.Date(df$Date))%>%
+  mutate(Cumulative_cases=cumsum(New_cases),
+           New_recoveries=Recoveries-lag(Recoveries),
+           New_Deaths=Deaths-lag(Deaths))%>%
+  select(Date,New_cases,Cumulative_cases,New_recoveries,Recoveries,New_Deaths,Deaths)
+
+  ##Provincial
+  df0<-prov_cases%>%group_by(date)%>%mutate(s1=sum(new_cases),s2=sum(cases))%>%filter(Province!="Un")
+  df00<-data.frame(df0,prov_death,prov_rec)%>%filter(Province %in% Provinces)%>%
+    mutate(Date=date,cumulative_cases=cases)%>%
+    select(Date,Province,new_cases,cumulative_cases,new_deaths,cumulative_deaths,new_recoveries,cumulative_recoveries,s1,s2)
+  
+  ##Actual figures
+  act_fig=df00%>%select(-c("s1","s2"))
+  
+#####    relative figures
+ u1<- df00%>%group_by(Date)%>%mutate(s3=sum(new_deaths),
+                                    s4=sum(cumulative_deaths),
+                                    s5=sum(new_recoveries),
+                                    s6=sum(cumulative_recoveries))%>%
+    mutate(new_cases=round((new_cases/s1)*100,2),cases=round((cumulative_cases/s2)*100,2),new_deaths=round((new_deaths/s3)*100,2),cumulative_deaths=(cumulative_deaths/s4)*100,new_recoveries=round((new_recoveries/s5)*100,2),cumulative_recoveries=round((cumulative_recoveries/s6)*100,2))%>%
+    group_by(Province)%>%
+    select(Date,Province,new_cases,cumulative_cases,new_deaths,cumulative_deaths,new_recoveries,cumulative_recoveries)
+  u2<-as.data.frame(apply(u1,2,replace_nan))%>%select(-c("Date","Province"))
+  rel_fig<-data.frame(u1[,1:2],u2)
+
+##Viewing the data
+result_data<-NULL
+
+if(National){result_data=outdata}else{ 
+  if(!National & type=="Actual"){result_data=act_fig}else{
+      if(!National & type!="Actual"){result_data=rel_fig}
+      }}
+  
+return(result_data)
+}
+```
+
+```{r}
+css_data<-"
+  div.data  {
+    border-bottom: 2px solid blue;
+    border-top: 2px solid red;
+    border-left: 2px solid yellow;
+    border-right: 2px solid green;
+  }
+"
+provinces=provinces[-length(provinces)]
+##user interface
+ui2<-fluidPage(
+  navlistPanel(widths = c(2,10),
+    tabPanel("Data view",icon=icon("columns"),tags$style(css_data),
+        fluidRow(
+          column(5,
+              radioButtons("data1","Data",choices=c("National","Provincial")),
+              conditionalPanel("input.data1=='Provincial'",
+                  fluidRow(
+                      column(5,selectInput("province","Choose     Province:",choices=provinces)),
+                      column(5,radioButtons("type1","Data type:",choices=c("Actual","Relative(%)")))))),
+          
+          column(7, div(class="data",
+               fluidRow(
+                    column(5,
+                           div(style="height: auto;",
+                               htmlOutput("outext"))),
+                    column(7,
+                           div(style="height: 100px; padding-top:1px;",
+                              imageOutput("image"))
+                    )
+               ))
+               )),
+        br(),
+        DT::dataTableOutput("table")
+    ),
+    tabPanel("Download data",icon=icon("download"),
+     radioButtons("data2","Data",choices=c("National","Provincial")),
+     conditionalPanel("input.data2=='Provincial'",
+     checkboxGroupInput("prov.down","Province(s)",choices=provinces,inline=TRUE)),
+     dateRangeInput("dater","Choose date:",format="yyyy-mm-dd",
+                    start=min(prov_cases$date),
+                    end=max(prov_cases$date)
+                    ),
+     downloadButton("down","Download")
+    )
+  )
+)
+
+server2<-function(input,output){
+  ##view data
+  output$table<-DT::renderDataTable(
+    DT::datatable(Dataviewer(input$data1=="National",input$province,input$type1)%>%mutate(Date=format(Date,"%d %b %Y")))
+  )
+  
+  ##download data
+  reactive_out<-reactive({
+    type1=input$data2;
+    type2=input$prov.down;
+    date.range=as.Date(input$dater);
+    format=input$form;
+    data=Dataviewer(type1=="National",type2)%>%filter(Date>=min(date.range) & Date<=max(date.range))
+    list(type1=type1,type2=type2,date.range=data.range,format=format,data=data)
+  })
+  
+  output$image<-renderImage({
+    type1<-input$data1
+    type2<-input$province
+    name<-NULL;if(type1=="National"){ name="SA" }else{name=type2}
+    filename=file.path(paste("Emblems/",name,".png",sep=""))
+    list(src=filename,width="250",height="110")
+  },deleteFile=FALSE)
+  
+  output$outext<-renderUI({
+  province_name=provinces2[which(provinces==input$province)]
+  out1<-NULL;
+  out2<-NULL;
+  site<-NULL;
+  if(input$data1=="National"){
+    out1="The data used is obtained from the daily updates posted on the official South African coronavirus portal."
+    site=HTML(paste("For more information visit the official website:",tags$br(),tags$a(href="https://www.sacoronavirus.co.za","South African coronavirus portal",target="_blank")))}else{
+    res<-NULL
+  if(sources$media[sources$Province==input$province]=="f"){res="facebook page"}
+    else{if(sources$media[sources$Province==input$province]=="t"){res="twitter page"}else{res="website"}}
+    out1=paste("The data used is obtained from the daily updates posted on the official health department",res,"of the",province_name,"province.")
+    site=HTML(paste("For more information visit the official",res,"of the health department for the",province_name,"province:", tags$br(),tags$a(target="_blank",href=sources$s[sources$Province==input$province],paste(province_name,"Health official",res))))}
+  HTML(paste(out1,tags$br(),tags$br(),site))
+  })
+  
+  output$down<-downloadHandler(
+    filename=function() {
+      date=reactive_out()$date.range
+        if(reactive_out()$type1=="National"){
+        paste("SA-Covid-19-data","_National_",date[1],"_-_",
+                     date[2],".",reactive_out()$format,sep="")}else{
+        paste("SA-Covid-19-data","_Provincial_",date[1],"_-_",
+                       date[2],".",reactive_out()$format,sep="")
+       }
+    },
+    content = function(file){
+      write.csv(reactive_out()$data,file)
+    }
+  )
+  
+}
+shinyApp(ui2,server2)
+```

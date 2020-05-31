@@ -1,0 +1,10 @@
+Province,s,media,
+LP,https://web.facebook.com/LimpopoDepartmentOfHealthBophelong/,f,
+KZN,http://www.kznonline.gov.za/Covid19/,w,
+WC,https://coronavirus.westerncape.gov.za/,w,
+EC,https://web.facebook.com/healthmec/,f
+NW,http://health.nwpg.gov.za/,w,
+NC,https://web.facebook.com/mecmakatong/,f,
+FS,https://web.facebook.com/freestatehealth/,f,
+MP,https://web.facebook.com/MPUHEALTH/,f,
+GP,https://twitter.com/GautengHealth,t,
