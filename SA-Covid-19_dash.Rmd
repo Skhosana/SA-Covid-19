@@ -940,5 +940,5 @@ shinyApp(ui2,server2)
 ```{r}
 ##deploy app
 library(rsconnect)
-deployApp("SA-Covid-19_dash.Rmd")
+deployApp("SA-Covid-19_dash.Rmd",account="sphiwe")
 ```
