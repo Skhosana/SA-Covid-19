@@ -936,3 +936,9 @@ server2<-function(input,output){
 }
 shinyApp(ui2,server2)
 ```
+
+```{r}
+##deploy app
+library(rsconnect)
+deployApp("SA-Covid-19_dash.Rmd")
+```
